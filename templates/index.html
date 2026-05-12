@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sign Language Detector</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #0f0f0f;
+            color: white;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            font-size: 2rem;
+            color: #00ff88;
+            text-align: center;
+        }
+
+        .video-wrapper {
+            position: relative;
+            width: 640px;
+            max-width: 100%;
+            aspect-ratio: 4 / 3;
+            background-color: #1a1a1a;
+            border: 3px solid #00ff88;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .video-wrapper img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .loading {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #888;
+            font-size: 0.95rem;
+            pointer-events: none;
+        }
+
+        p.hint {
+            margin-top: 16px;
+            color: #888;
+            font-size: 0.9rem;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <h1>🤟 Sign Language Detector</h1>
+    <div class="video-wrapper">
+        <span class="loading">Cargando camara…</span>
+        <img src="{{ url_for('video_feed') }}" alt="Camera feed"
+             onload="this.previousElementSibling.style.display='none'">
+    </div>
+    <p class="hint">Muestra una letra del alfabeto ASL frente a la camara</p>
+</body>
+</html>
