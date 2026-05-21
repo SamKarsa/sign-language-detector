@@ -1,79 +1,221 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Sign Language Detector</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            background-color: #0f0f0f;
-            color: white;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            padding: 20px;
-        }
-
-        h1 {
-            margin-bottom: 20px;
-            font-size: 2rem;
-            color: #00ff88;
-            text-align: center;
-        }
-
-        .video-wrapper {
-            position: relative;
-            width: 640px;
-            max-width: 100%;
-            aspect-ratio: 4 / 3;
-            background-color: #1a1a1a;
-            border: 3px solid #00ff88;
-            border-radius: 12px;
-            overflow: hidden;
-        }
-
-        .video-wrapper img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            display: block;
-        }
-
-        .loading {
-            position: absolute;
-            inset: 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: #888;
-            font-size: 0.95rem;
-            pointer-events: none;
-        }
-
-        p.hint {
-            margin-top: 16px;
-            color: #888;
-            font-size: 0.9rem;
-            text-align: center;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign Language Detector</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
-    <h1>🤟 Sign Language Detector</h1>
-    <div class="video-wrapper">
-        <span class="loading">Cargando camara…</span>
-        <img src="{{ url_for('video_feed') }}" alt="Camera feed"
-             onload="this.previousElementSibling.style.display='none'">
+
+  <!-- HEADER -->
+  <header>
+    <div class="logo">
+      <div class="logo-mark">🤟</div>
+      <div class="logo-copy">
+        <div class="logo-title">Sign.Detect</div>
+        <div class="logo-sub">Lenguaje de Señas · IA</div>
+      </div>
     </div>
-    <p class="hint">Muestra una letra del alfabeto ASL frente a la camara</p>
+    <div class="header-right">
+      <div class="live-badge">
+        <div class="live-dot"></div>
+        <span>modelo activo</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- MAIN -->
+  <main>
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+
+      <div class="sidebar-block">
+        <div class="block-label">Seleccionar país</div>
+        <div class="country-list" id="country-list">
+          {% for key, meta in countries.items() %}
+          <button
+            class="country-btn {% if key == current_country %}active{% endif %}"
+            data-country="{{ key }}"
+            data-name="{{ meta.name }}"
+            data-flag="{{ meta.flag }}"
+            {% if not meta.available %}disabled title="Modelo no entrenado para este país"{% endif %}
+            onclick="switchCountry(this)"
+          >
+            <span class="c-flag">{{ meta.flag }}</span>
+            <span class="c-info">
+              <span class="c-name">{{ meta.name }}</span>
+            </span>
+            {% if meta.available %}
+              <span class="c-badge badge-ok">listo</span>
+            {% else %}
+              <span class="c-badge badge-none">sin modelo</span>
+            {% endif %}
+            {% if key == current_country %}
+              <span class="c-active-dot" id="check-{{ key }}"></span>
+            {% endif %}
+          </button>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="sidebar-block">
+        <div class="block-label">Agregar nuevo país</div>
+        <div class="cmd-box">
+          <div class="cmd-step">
+            <span class="cmd-num">01</span>
+            <div class="cmd-body">
+              Captura datos
+              <code>python capture_data.py --country colombia</code>
+            </div>
+          </div>
+          <div class="cmd-step">
+            <span class="cmd-num">02</span>
+            <div class="cmd-body">
+              Entrena el modelo
+              <code>python model/train.py --country colombia</code>
+            </div>
+          </div>
+          <div class="cmd-step">
+            <span class="cmd-num">03</span>
+            <div class="cmd-body">Recarga la app y selecciona el país</div>
+          </div>
+        </div>
+      </div>
+
+    </aside>
+
+    <!-- VIDEO -->
+    <section class="video-area">
+      <div class="video-wrap">
+        <div class="corner corner-tl"></div>
+        <div class="corner corner-tr"></div>
+        <div class="corner corner-bl"></div>
+        <div class="corner corner-br"></div>
+
+        <div class="video-frame">
+          <!-- HUD -->
+          <div class="hud" id="country-hud">
+            <span class="hud-flag" id="hud-flag">{{ countries[current_country].flag }}</span>
+            <span class="hud-name" id="hud-name">{{ countries[current_country].name }}</span>
+          </div>
+
+          <!-- loading overlay -->
+          <div class="v-overlay" id="loading-overlay">
+            <div class="spin"></div>
+            <div class="v-overlay-text">Iniciando cámara…</div>
+          </div>
+
+          <!-- switching overlay -->
+          <div class="v-switch" id="switch-overlay">
+            <div class="spin"></div>
+            <div class="v-switch-text" id="switch-text">Cargando modelo…</div>
+          </div>
+
+          <img
+            src="{{ url_for('video_feed') }}"
+            alt="Cámara en vivo"
+            id="video-img"
+            onload="document.getElementById('loading-overlay').classList.add('gone')"
+          >
+        </div>
+      </div>
+
+      <div class="meta-bar">
+        <div class="tag">🎥 <span>cámara 0</span></div>
+        <div class="tag">
+          modelo: <span id="active-country-label" class="accent-val">{{ current_country }}</span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- FOOTER -->
+  <footer>
+    <span>SIGN.DETECT v2.0</span>
+    <div class="stack">
+      <span>MediaPipe</span>
+      <div class="sep"></div>
+      <span>RandomForest</span>
+      <div class="sep"></div>
+      <span>Flask</span>
+    </div>
+  </footer>
+
+  <!-- TOAST -->
+  <div class="toast" id="toast">
+    <span class="toast-icon" id="toast-icon">✓</span>
+    <span id="toast-msg">Modelo cargado</span>
+  </div>
+
+  <script>
+    let currentCountry = '{{ current_country }}';
+
+    function showToast(msg, ok = true) {
+      const t     = document.getElementById('toast');
+      const icon  = document.getElementById('toast-icon');
+      const label = document.getElementById('toast-msg');
+      t.className = 'toast' + (ok ? '' : ' err');
+      icon.textContent  = ok ? '✓' : '✗';
+      label.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 3000);
+    }
+
+    function updateUI(country, name, flag) {
+      document.querySelectorAll('.country-btn').forEach(btn => {
+        const isActive = btn.dataset.country === country;
+        btn.classList.toggle('active', isActive);
+        const existing = btn.querySelector('.c-active-dot');
+        if (isActive && !existing) {
+          const dot = document.createElement('span');
+          dot.className = 'c-active-dot';
+          btn.appendChild(dot);
+        } else if (!isActive && existing) {
+          existing.remove();
+        }
+      });
+      document.getElementById('hud-flag').textContent = flag;
+      document.getElementById('hud-name').textContent = name;
+      document.getElementById('active-country-label').textContent = country;
+    }
+
+    async function switchCountry(btn) {
+      const country = btn.dataset.country;
+      const name    = btn.dataset.name;
+      const flag    = btn.dataset.flag;
+
+      if (country === currentCountry) return;
+
+      const overlay    = document.getElementById('switch-overlay');
+      const switchText = document.getElementById('switch-text');
+      switchText.textContent = `Cargando modelo ${name}…`;
+      overlay.classList.add('on');
+
+      try {
+        const res  = await fetch('/set_country', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ country })
+        });
+        const data = await res.json();
+
+        if (data.ok) {
+          currentCountry = country;
+          updateUI(country, data.name, data.flag);
+          showToast(`Modelo ${data.flag} ${data.name} cargado`, true);
+        } else {
+          showToast(data.error || 'Error al cargar modelo', false);
+        }
+      } catch (e) {
+        showToast('Error de conexión con el servidor', false);
+      } finally {
+        overlay.classList.remove('on');
+      }
+    }
+  </script>
 </body>
 </html>

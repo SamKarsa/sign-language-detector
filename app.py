@@ -6,29 +6,66 @@ os.environ.setdefault('TF_ENABLE_ONEDNN_OPTS', '0')
 
 import pickle
 import socket
+import threading
 from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='google.protobuf')
 
 import cv2
 import numpy as np
-from flask import Flask, Response, render_template
+from flask import Flask, Response, jsonify, render_template, request
 
 from utils.hand_detector import extract_landmarks, mp_drawing, mp_hands
 
 BASE_DIR = Path(__file__).resolve().parent
-MODEL_PATH = BASE_DIR / 'model' / 'classifier.pkl'
-ENCODER_PATH = BASE_DIR / 'model' / 'label_encoder.pkl'
+MODEL_BASE = BASE_DIR / 'model'
 
-if not MODEL_PATH.exists() or not ENCODER_PATH.exists():
-    raise FileNotFoundError(
-        "No se encontraron los archivos del modelo. "
-        "Ejecuta primero: python model/train.py"
-    )
+COUNTRIES = {
+    'asl':      {'name': 'ASL (Estados Unidos)', 'flag': '🇺🇸'},
+    'colombia': {'name': 'Colombia',              'flag': '🇨🇴'},
+    'china':   {'name': 'China',                'flag': 'Ch'},
+}
 
-with open(MODEL_PATH, 'rb') as f:
-    model = pickle.load(f)
+_model_lock = threading.Lock()
+current_country = 'asl'
+model = None
+le = None
 
-with open(ENCODER_PATH, 'rb') as f:
-    le = pickle.load(f)
+
+def load_model(country: str):
+    global model, le, current_country
+    model_dir = MODEL_BASE / country
+    classifier_path = model_dir / 'classifier.pkl'
+    encoder_path    = model_dir / 'label_encoder.pkl'
+
+    if not classifier_path.exists() or not encoder_path.exists():
+        raise FileNotFoundError(
+            f"No se encontró modelo para '{country}'. "
+            f"Ejecuta: python model/train.py --country {country}"
+        )
+
+    with open(classifier_path, 'rb') as f:
+        new_model = pickle.load(f)
+    with open(encoder_path, 'rb') as f:
+        new_le = pickle.load(f)
+
+    with _model_lock:
+        model = new_model
+        le = new_le
+        current_country = country
+
+
+def get_available_countries():
+    available = {}
+    for key, meta in COUNTRIES.items():
+        model_dir = MODEL_BASE / key
+        has_model = (model_dir / 'classifier.pkl').exists() and \
+                    (model_dir / 'label_encoder.pkl').exists()
+        available[key] = {**meta, 'available': has_model}
+    return available
+
+
+load_model('asl')
 
 app = Flask(__name__)
 
@@ -59,25 +96,63 @@ def generate_frames():
             landmarks, hand_landmarks = extract_landmarks(frame_rgb)
 
             if landmarks is not None:
-                prediction = model.predict([landmarks])[0]
-                label = le.inverse_transform([prediction])[0]
+                with _model_lock:
+                    _model = model
+                    _le = le
 
-                mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-                cv2.putText(frame, label, (50, 80), cv2.FONT_HERSHEY_SIMPLEX,
-                            3, (0, 255, 0), 4, cv2.LINE_AA)
+                prediction = _model.predict([landmarks])[0]
+                label = _le.inverse_transform([prediction])[0]
+
+                mp_drawing.draw_landmarks(
+                    frame, hand_landmarks, mp_hands.HAND_CONNECTIONS
+                )
+                cv2.putText(frame, label, (50, 150), cv2.FONT_HERSHEY_SIMPLEX,
+                            3, (255, 0, 255), 4, cv2.LINE_AA)
 
             ret, buffer = cv2.imencode('.jpg', frame)
             if not ret:
                 continue
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                   b'Content-Type: image/jpeg\r\n\r\n'
+                   + buffer.tobytes() + b'\r\n')
     finally:
         camera.release()
 
 
 @app.route('/')
 def index():
-    return render_template('index.html')
+    countries = get_available_countries()
+    return render_template('index.html',
+                           countries=countries,
+                           current_country=current_country)
+
+
+@app.route('/set_country', methods=['POST'])
+def set_country():
+    data = request.get_json()
+    country = data.get('country', '').strip()
+
+    if country not in COUNTRIES:
+        return jsonify({'ok': False, 'error': 'País no válido'}), 400
+
+    try:
+        load_model(country)
+        return jsonify({
+            'ok': True,
+            'country': country,
+            'name': COUNTRIES[country]['name'],
+            'flag': COUNTRIES[country]['flag'],
+        })
+    except FileNotFoundError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 404
+
+
+@app.route('/current_country')
+def get_current_country():
+    return jsonify({
+        'country': current_country,
+        **COUNTRIES[current_country]
+    })
 
 
 @app.route('/video_feed')
