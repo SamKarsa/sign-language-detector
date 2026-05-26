@@ -16,6 +16,6 @@ RUN pip install --no-cache-dir -r requirements-docker.txt
 # Copiar código y modelos entrenados
 COPY . .
 
-EXPOSE 5000
+EXPOSE 10000
 
-CMD ["python", "app.py"]
+CMD gunicorn app:app --workers 1 --timeout 120 --bind 0.0.0.0:${PORT:-10000}

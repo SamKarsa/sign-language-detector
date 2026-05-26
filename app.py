@@ -1,13 +1,12 @@
 import os
 import sys
-import time
+import base64
 
 os.environ.setdefault('GLOG_minloglevel', '2')
 os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '3')
 os.environ.setdefault('TF_ENABLE_ONEDNN_OPTS', '0')
 
 import pickle
-import socket
 import threading
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='google.protobuf')
@@ -17,7 +16,7 @@ import numpy as np
 from flask import Flask, Response, jsonify, render_template, request
 
 from config import COUNTRIES, MODEL_BASE
-from utils.hand_detector import extract_landmarks, mp_drawing, mp_hands
+from utils.hand_detector import extract_landmarks
 
 # ── Estado del modelo ────────────────────────────────────────────────────────
 _model_lock = threading.Lock()
@@ -63,111 +62,49 @@ load_model('asl')
 app = Flask(__name__)
 
 
-# ── Utilidades de video ──────────────────────────────────────────────────────
-def _placeholder_frame(message: str) -> bytes:
-    frame = np.zeros((480, 640, 3), dtype=np.uint8)
-    cv2.putText(frame, message, (40, 240), cv2.FONT_HERSHEY_SIMPLEX,
-                0.9, (0, 0, 255), 2, cv2.LINE_AA)
-    _, buffer = cv2.imencode('.jpg', frame)
-    return buffer.tobytes()
+# ── Predicción desde frame enviado por el browser ───────────────────────────
+@app.route('/predict', methods=['POST'])
+def predict():
+    data = request.get_json(silent=True) or {}
+    frame_b64 = data.get('frame', '')
+    letter = data.get('letter', '').upper()
 
+    try:
+        frame_bytes = base64.b64decode(frame_b64)
+        nparr = np.frombuffer(frame_bytes, np.uint8)
+        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    except Exception:
+        return jsonify({'detected': False})
 
-# ── Cámara compartida (hilo de fondo) ───────────────────────────────────────
-_cam_lock     = threading.Lock()
-_cam_ready    = threading.Event()
-_latest_annotated = None   # frame BGR con landmarks y predicción dibujados
-_latest_landmarks = None   # np.array de 63 floats, o None si no hay mano
-_camera_active    = False
+    if frame is None:
+        return jsonify({'detected': False})
 
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    lm, hand_lm = extract_landmarks(rgb)
 
-def _start_camera():
-    def worker():
-        global _latest_annotated, _latest_landmarks, _camera_active
-        # CAP_DSHOW (DirectShow) requerido en Windows; en Linux usar backend por defecto
-        if sys.platform == 'win32':
-            cam = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        else:
-            cam = cv2.VideoCapture(0)
+    if lm is None:
+        return jsonify({'detected': False, 'label': None, 'score': 0.0, 'landmarks': None})
 
-        if not cam.isOpened():
-            _camera_active = False
-            _cam_ready.set()
-            return
+    with _model_lock:
+        m, enc = model, le
 
-        # Windows necesita varios frames de calentamiento antes de devolver
-        # datos válidos; leerlos sin procesar evita un break prematuro.
-        for _ in range(10):
-            cam.read()
-            time.sleep(0.05)
+    proba = m.predict_proba([lm])[0]
+    label = enc.classes_[proba.argmax()]
 
-        _camera_active = True
-        _cam_ready.set()
+    # Landmarks normalizados [0,1] para dibujar en el browser
+    landmarks = [{'x': float(pt.x), 'y': float(pt.y)} for pt in hand_lm.landmark]
 
-        consecutive_failures = 0
-        while True:
-            ok, frame = cam.read()
-            if not ok:
-                consecutive_failures += 1
-                if consecutive_failures > 60:   # ~2s de fallos consecutivos → desconectada
-                    break
-                time.sleep(0.033)
-                continue
-            consecutive_failures = 0
+    score_val = float(proba.max())
+    if letter and letter in enc.classes_:
+        target_idx = list(enc.classes_).index(letter)
+        score_val = float(proba[target_idx])
 
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            lm, hand_lm = extract_landmarks(rgb)
-
-            out = frame.copy()
-            if lm is not None:
-                with _model_lock:
-                    m, enc = model, le
-                label = enc.inverse_transform([m.predict([lm])[0]])[0]
-                mp_drawing.draw_landmarks(out, hand_lm, mp_hands.HAND_CONNECTIONS)
-                cv2.putText(out, label, (50, 150), cv2.FONT_HERSHEY_SIMPLEX,
-                            3, (255, 0, 255), 4, cv2.LINE_AA)
-
-            out = cv2.flip(out, 1)  # efecto espejo — más natural para el usuario
-
-            with _cam_lock:
-                _latest_annotated = out
-                _latest_landmarks = lm
-
-        cam.release()
-
-    threading.Thread(target=worker, daemon=True).start()
-
-
-# Solo abrir la cámara en el proceso que realmente sirve peticiones.
-# En debug mode, Flask usa un reloader que crea DOS procesos; el proceso padre
-# (watcher) no debe capturar la cámara para que el hijo (servidor) pueda hacerlo.
-if os.environ.get('WERKZEUG_RUN_MAIN') != 'false':
-    _start_camera()
-
-
-# ── Generador MJPEG ──────────────────────────────────────────────────────────
-def generate_frames():
-    _cam_ready.wait(timeout=15.0)
-
-    if not _camera_active:
-        # Cámara no disponible: enviar placeholder en loop para mantener el stream abierto
-        placeholder = _placeholder_frame('No se detecto camara')
-        while True:
-            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'
-                   + placeholder + b'\r\n')
-            time.sleep(1.0)
-        return
-
-    while True:
-        with _cam_lock:
-            frame = _latest_annotated
-        if frame is None:
-            time.sleep(0.033)
-            continue
-        ok, buf = cv2.imencode('.jpg', frame)
-        if ok:
-            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n'
-                   + buf.tobytes() + b'\r\n')
-        time.sleep(0.033)
+    return jsonify({
+        'detected': True,
+        'label': label,
+        'score': score_val,
+        'landmarks': landmarks,
+    })
 
 
 # ── Rutas principales ────────────────────────────────────────────────────────
@@ -204,12 +141,6 @@ def get_current_country():
     return jsonify({'country': current_country, **COUNTRIES[current_country]})
 
 
-@app.route('/video_feed')
-def video_feed():
-    return Response(generate_frames(),
-                    mimetype='multipart/x-mixed-replace; boundary=frame')
-
-
 # ── Rutas de aprendizaje ─────────────────────────────────────────────────────
 @app.route('/learn')
 def learn():
@@ -220,30 +151,6 @@ def learn():
                            countries=countries,
                            current_country=current_country,
                            letters=letters)
-
-
-@app.route('/learn/score')
-def learn_score():
-    letter = request.args.get('letter', '').upper()
-
-    with _cam_lock:
-        landmarks = _latest_landmarks
-
-    if landmarks is None:
-        return jsonify({'score': 0.0, 'detected': False, 'label': None})
-
-    with _model_lock:
-        m, enc = model, le
-
-    if letter not in enc.classes_:
-        return jsonify({'score': 0.0, 'detected': True, 'label': None})
-
-    proba = m.predict_proba([landmarks])[0]
-    target_idx = list(enc.classes_).index(letter)
-    score = float(proba[target_idx])
-    predicted_label = enc.classes_[proba.argmax()]
-
-    return jsonify({'score': score, 'detected': True, 'label': predicted_label})
 
 
 # ── Pista visual (landmarks de referencia desde los datos de entrenamiento) ──
@@ -313,17 +220,17 @@ def spell():
 
 
 # ── Arranque ─────────────────────────────────────────────────────────────────
-def _lan_ip() -> str:
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(('8.8.8.8', 80))
-            return s.getsockname()[0]
-    except OSError:
-        return '127.0.0.1'
-
-
 if __name__ == '__main__':
-    port = 5000
+    import socket
+    def _lan_ip():
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(('8.8.8.8', 80))
+                return s.getsockname()[0]
+        except OSError:
+            return '127.0.0.1'
+
+    port = int(os.environ.get('PORT', 5000))
     print(f"\n  Local:   http://127.0.0.1:{port}")
     print(f"  Network: http://{_lan_ip()}:{port}\n")
-    app.run(host='0.0.0.0', port=port, debug=True, use_reloader=False)
+    app.run(host='0.0.0.0', port=port, debug=False)
