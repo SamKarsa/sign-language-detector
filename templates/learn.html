@@ -212,11 +212,15 @@
     navigator.mediaDevices.getUserMedia({video: true, audio: false})
       .then(stream => {
         video.srcObject = stream;
-        video.addEventListener('loadeddata', () => {
+        const hideOverlay = () => {
           canvas.width  = video.videoWidth  || 640;
           canvas.height = video.videoHeight || 480;
           document.getElementById('loading-overlay').classList.add('gone');
-        });
+        };
+        ['loadedmetadata', 'loadeddata', 'canplay', 'playing'].forEach(e =>
+          video.addEventListener(e, hideOverlay, {once: true})
+        );
+        if (video.readyState >= 2) hideOverlay();
       })
       .catch(() => {
         const ol = document.getElementById('loading-overlay');
