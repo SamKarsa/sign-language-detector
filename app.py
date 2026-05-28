@@ -419,6 +419,34 @@ def capture_save():
     return jsonify({'ok': True, 'detected': True, 'saved': True})
 
 
+@app.route('/capture/reset_letter', methods=['POST'])
+def capture_reset_letter():
+    import pandas as pd
+    data    = request.get_json(silent=True) or {}
+    label   = data.get('label', '').upper()
+    country = data.get('country', 'asl')
+
+    if not label or country not in COUNTRIES:
+        return jsonify({'ok': False, 'error': 'Datos inválidos'}), 400
+
+    folder   = 'China' if country == 'china' else country
+    csv_path = BASE_DIR / 'data' / folder / 'landmarks.csv'
+
+    if not csv_path.exists():
+        return jsonify({'ok': True, 'deleted': 0})
+
+    with _capture_locks[country]:
+        df      = pd.read_csv(csv_path)
+        deleted = int((df['label'] == label).sum())
+        df      = df[df['label'] != label]
+        if df.empty:
+            csv_path.unlink()
+        else:
+            df.to_csv(csv_path, index=False)
+
+    return jsonify({'ok': True, 'deleted': deleted})
+
+
 @app.route('/capture/counts')
 def capture_counts():
     country  = request.args.get('country', 'asl')

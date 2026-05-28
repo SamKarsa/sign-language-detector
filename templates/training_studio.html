@@ -292,6 +292,8 @@
     }
     .h-btn:disabled { opacity: .35; cursor: default; }
     .h-btn.accent-border { border-color: rgba(1,245,13,.3); color: rgba(1,245,13,.8); }
+    .h-btn--danger { border-color: rgba(240,96,96,.35); color: rgba(240,96,96,.75); }
+    .h-btn--danger:hover { background: rgba(240,96,96,.12); border-color: var(--danger); color: var(--danger); }
 
     /* ── CAMERA AREA ── */
     .cam-wrap {
@@ -576,6 +578,7 @@
           </button>
           <button class="h-btn" id="next-btn" onclick="nextLetter()" disabled>Sig →</button>
           <button class="h-btn" onclick="goWeakest()" title="Letra con menos muestras">🎯</button>
+          <button class="h-btn h-btn--danger" id="reset-btn" onclick="resetLetter()" disabled title="Borrar todas las muestras de esta letra">🗑 Reiniciar</button>
         </div>
 
       </div>
@@ -830,6 +833,37 @@
     updateTip();
     document.getElementById('next-btn').disabled = false;
     document.getElementById('cap-btn').disabled = false;
+    document.getElementById('reset-btn').disabled = false;
+  }
+
+  async function resetLetter() {
+    if (!currentLetter) return;
+    const n = counts[currentLetter] || 0;
+    const msg = n > 0
+      ? `¿Borrar las ${n} muestras de la letra "${currentLetter}"?\nEsta acción no se puede deshacer.`
+      : `La letra "${currentLetter}" no tiene muestras guardadas.`;
+    if (n === 0 || !confirm(msg)) return;
+
+    try {
+      const res  = await fetch('/capture/reset_letter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: currentLetter, country: currentCountry })
+      });
+      const data = await res.json();
+      if (!data.ok) { alert('Error al borrar las muestras'); return; }
+
+      counts[currentLetter] = 0;
+      // Descontar del total de sesión si aplica
+      if (sessionCounts[currentLetter]) {
+        delete sessionCounts[currentLetter];
+        updateSessionLog();
+      }
+      capturing = false;
+      updateCapBtn();
+      refreshGrid();
+      updateHero();
+    } catch (_) { alert('Error de red al borrar las muestras'); }
   }
 
   function nextLetter() {
